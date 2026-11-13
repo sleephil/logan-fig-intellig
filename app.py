@@ -21,6 +21,7 @@ def setup(c):
     c.execute("CREATE TABLE IF NOT EXISTS filings(cik TEXT,accession TEXT,period DATE,form TEXT,source TEXT,ingested_at TIMESTAMPTZ DEFAULT NOW(),PRIMARY KEY(cik,accession))")
     c.execute("CREATE TABLE IF NOT EXISTS holdings(cik TEXT,accession TEXT,row_id INTEGER,issuer TEXT,cusip TEXT,title TEXT,value_usd BIGINT,shares DOUBLE PRECISION,PRIMARY KEY(cik,accession,row_id))")
     c.execute("CREATE TABLE IF NOT EXISTS ingest_runs(id BIGSERIAL PRIMARY KEY,started_at TIMESTAMPTZ DEFAULT NOW(),finished_at TIMESTAMPTZ,status TEXT NOT NULL DEFAULT 'running',checked_filings INTEGER NOT NULL DEFAULT 0,new_filings INTEGER NOT NULL DEFAULT 0,error TEXT)")
+    c.execute("ALTER TABLE ingest_runs ADD COLUMN IF NOT EXISTS current_platform TEXT")
 def sync():
     run_id=None
     checked=0
@@ -33,6 +34,8 @@ def sync():
             run_id=c.execute("INSERT INTO ingest_runs(status) VALUES('running') RETURNING id").fetchone()[0]
             c.commit()
             for name,cik in PLATFORMS.items():
+                c.execute("UPDATE ingest_runs SET current_platform=%s WHERE id=%s",(name,run_id))
+                c.commit()
                 entries=submissions(cik)
                 for entry in entries:
                     checked+=1
@@ -70,13 +73,13 @@ def status(req:Request):
     authorize(req)
     with connect() as c:
         setup(c)
-        last=c.execute("SELECT started_at,finished_at,status,checked_filings,new_filings,error FROM ingest_runs ORDER BY id DESC LIMIT 1").fetchone()
+        last=c.execute("SELECT started_at,finished_at,status,checked_filings,new_filings,error,current_platform FROM ingest_runs ORDER BY id DESC LIMIT 1").fetchone()
         last_success=c.execute("SELECT finished_at FROM ingest_runs WHERE status='success' ORDER BY id DESC LIMIT 1").fetchone()
         counts=c.execute("SELECT count(*),max(period),max(ingested_at) FROM filings").fetchone()
     def iso(value):return value.isoformat() if value else None
     return {"last_check_started":iso(last[0]) if last else None,"last_check_completed":iso(last[1]) if last else None,
             "last_check_status":last[2] if last else "never","checked_filings":last[3] if last else 0,
-            "new_filings":last[4] if last else 0,"last_error":last[5] if last else None,
+            "new_filings":last[4] if last else 0,"last_error":last[5] if last else None,"current_platform":last[6] if last else None,
             "last_successful_check":iso(last_success[0]) if last_success else None,
             "imported_filings":counts[0],"latest_reporting_period":iso(counts[1]),"latest_import":iso(counts[2])}
 
