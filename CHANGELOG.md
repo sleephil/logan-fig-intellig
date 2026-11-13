@@ -1,3 +1,10 @@
+## FIG 0.5.0 - 2026-11-13 - Market preload and reverse manager reporting
+- Preload all filers in the existing September 2023-onward holdings window from official bulk ZIPs, then checkpoint individual newer filings. Keep the 1994-onward identity directory separate.
+- Store compact reconciled accession-level manager buckets, not duplicate security histories; publish indexed firm-manager-quarter generations outside report requests.
+- Add protected manager-to-reporting-firms lookup, gross reported attribution totals, same-firm comparable changes, histories and explicit partial coverage.
+- Preserve SEC source hashes, rejected filings, shared-attribution and missing-data warnings; totals across reporters may overlap and are not verified client assets or flows.
+- Use additive isolated FIG tables and retain raw snapshots, source revisions, access restrictions, trading systems and existing page behavior.
+
 ## FIG 0.4.0 - 2026-11-13 - SEC-wide filer directory
 - Replace one-firm whitelist with official SEC quarterly master-index identity directory, 1994 onward.
 - Keep directory discovery separate from reconciled holdings; include notices and historical filers without invented balances.

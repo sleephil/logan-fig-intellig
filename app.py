@@ -121,7 +121,10 @@ def home():return '<h1>Logan FIG Intelligence</h1><p>Private service. Open FIG I
 def status(req:Request):
     authorize(req)
     with storage.connect() as c:
-        result=storage.status(c);result['directory']=directory.status(c);return result
+        result=storage.status(c);result['directory']=directory.status(c)
+        import market_store
+        result['market']=market_store.coverage(c)
+        return result
 
 @app.get('/api/version')
 def version(req:Request):
@@ -133,7 +136,13 @@ def version(req:Request):
 @app.get('/api/platforms')
 def platforms(req:Request):
     authorize(req)
-    with storage.connect() as c:return directory.listing(c)
+    with storage.connect() as c:
+        import market_store
+        rows=directory.listing(c);loaded=market_store.directory_rows(c)
+        for row in rows:
+            if row['cik'] in loaded:
+                row.update(loaded[row['cik']],manager_summary_ready=True)
+        return rows
 
 
 def require_filer(code):
@@ -150,7 +159,11 @@ def filer_status(cik:str,req:Request):
     with storage.connect() as c:
         row=c.execute('SELECT COUNT(DISTINCT accession),MIN(period),MAX(period) FROM fig_filings_v2 WHERE cik=%s AND parser_version=%s',
             (entity['cik'],storage.PARSER_VERSION)).fetchone()
-    return {'name':entity['name'],'cik':entity['cik'],'forms':entity['forms'],
+    import market_store
+    with storage.connect() as c:cached=market_store.forward(c,entity['cik'])
+    if cached and cached['periods']:
+        row=(sum(len(p['sources']) for p in cached['period_summaries']),cached['periods'][0],cached['periods'][-1])
+    return {'manager_summary_ready':bool(cached),'name':entity['name'],'cik':entity['cik'],'forms':entity['forms'],
             'last_filing':entity['last_filing'],'load_status':entity['load_status'] or ('ready' if row[0] else 'not_loaded'),
             'load_error':entity['load_error'],'load_finished_at':entity['load_finished_at'],'run_id':entity['run_id'],
             'filing_count':row[0],'first_period':row[1],'last_period':row[2],
@@ -160,8 +173,10 @@ def filer_status(cik:str,req:Request):
 def reports(cik:str,req:Request):
     authorize(req)
     entity=require_filer(cik);cik=entity['cik']
-    with storage.connect() as c:snaps=storage.latest(c,cik)
-    return [{'period':s.period,'accession':s.accession,'positions':len(s.rows),'reported_value_usd':s.expected_total,
+    with storage.connect() as c:
+        import market_store
+        snaps=market_store.latest_summaries(c,cik) or storage.latest(c,cik)
+    return [{'period':s.period,'accession':s.accession,'positions':s.expected_count,'reported_value_usd':s.expected_total,
              'form':s.form,'filing_date':s.filing_date,'amendment_type':s.amendment_type,'report_type':s.report_type,
              'reconciled':True,'snapshot_sha256':s.checksum,'sources':s.sources} for s in sorted(snaps,key=lambda s:(s.period,s.filing_date,s.accession),reverse=True)]
 
@@ -201,7 +216,12 @@ def managers(cik:str, req:Request):
     authorize(req)
     entity=require_filer(cik);cik=entity['cik']
     from manager_reporting import manager_report
-    with storage.connect() as c:snaps=storage.latest(c,cik)
+    with storage.connect() as c:
+        import market_store
+        cached=market_store.forward(c,cik)
+        if cached is not None:
+            cached.update(release());return cached
+        snaps=storage.latest(c,cik)
     result=manager_report(snaps)
     result.update({'cik':cik,'reporting_entity':entity['name'],**release()})
     return result
@@ -233,3 +253,23 @@ def load_filer(cik:str,req:Request):
     except Exception as exc:raise HTTPException(503,error_code(exc)) from exc
     return {'queued':True,'cik':entity['cik'],'status':state['load_status'],
             'reason':'Selected-filer request saved; progress is available in the selected-firm status.'}
+
+
+@app.get('/api/market/status')
+def market_status(req:Request):
+    authorize(req)
+    import market_store
+    with storage.connect() as c:return market_store.coverage(c)
+
+@app.get('/api/market/managers')
+def market_managers(req:Request,q:str=''):
+    authorize(req)
+    import market_store
+    with storage.connect() as c:return market_store.manager_options(c,q)
+
+@app.get('/api/market/reverse')
+def market_reverse(req:Request,manager_id:str):
+    authorize(req)
+    if len(manager_id)>160:raise HTTPException(400,'Invalid manager identity')
+    import market_store
+    with storage.connect() as c:return market_store.reverse(c,manager_id)
