@@ -34,7 +34,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Reconstruct and verify the exact eight-file candidate
+      - name: Reconstruct and verify candidate including release contract tests
         run: |
           cp -R .release-build /tmp/manager-build
           test "$(git rev-parse origin/main)" = 8adf038769c4e5192f881813023976576ea503ec
@@ -56,6 +56,7 @@ jobs:
               if p.endswith('.py'):ast.parse(Path(p).read_text())
           Path('/tmp/manager-manifest.json').write_text(json.dumps(expected,indent=2))
           PY
+          python /tmp/manager-build/refine.py
           git diff --check
       - run: python -m pip install -r requirements.txt pip-audit==2.9.0
       - name: Security and all importer manager API regressions
@@ -73,6 +74,7 @@ jobs:
           from pathlib import Path
           import hashlib,json,subprocess
           expected=json.loads(Path('/tmp/manager-manifest.json').read_text())
+          assert set(expected)=={'app.py','manager_reporting.py','tests/test_managers.py','tests/test_ingest.py','verify_manager_sources.py','version.py','CHANGELOG.md','CHANGELOG.json','docs/importer.md'}
           assert all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==h for p,h in expected.items())
           subprocess.run(['git','add','--',*expected],check=True)
           assert set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())==set(expected)
