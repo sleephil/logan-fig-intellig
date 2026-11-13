@@ -1,0 +1,102 @@
+name: SEC-wide filer directory validation
+on:
+  push:
+    branches: [work/sec-filer-directory-20261113]
+    paths: [.github/workflows/sec-directory-validation.yml, '.release-build/**']
+permissions:
+  contents: write
+concurrency:
+  group: sec-directory-isolated
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fig_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d fig_test"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      PYTHONPATH: .
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fig_test
+      SEC_USER_AGENT: Logan Capital Management FIG Research sslee@logancapital.com
+      FIG_REQUEST_WORKER: 'false'
+      FIG_SYNC_ON_STARTUP: 'false'
+      FIG_VERIFY_FULL_DIRECTORY: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Reconstruct exact tested source on unchanged baseline
+        run: |
+          cp -R .release-build /tmp/sec-directory-build
+          test "$(git rev-parse origin/main)" = d61ac757e729d2699bf88cd33ad33b1db462102d
+          git switch --detach d61ac757e729d2699bf88cd33ad33b1db462102d
+          git switch -c release/sec-filer-directory-20261113
+          python - <<'PY'
+          from pathlib import Path
+          import base64,lzma,json,hashlib,subprocess,ast
+          raw=lzma.decompress(base64.b64decode(Path('/tmp/sec-directory-build/directory.xz64').read_text().strip(),validate=True))
+          assert hashlib.sha256(raw).hexdigest()=='eaaf6969731c6800417660daeb92f44ef31a5e5bf961805948f462e2ef61c12b'
+          payload=json.loads(raw);expected=payload['hashes']
+          allowed={'CHANGELOG.json','CHANGELOG.md','app.py','docs/importer.md','filer_directory.py','storage.py','tests/test_directory.py','tests/test_ingest.py','tests/test_managers.py','verify_directory_sources.py','version.py'}
+          assert set(expected)==allowed
+          patch=payload['patch'].encode()
+          subprocess.run(['git','apply','--check','-'],input=patch,check=True)
+          subprocess.run(['git','apply','-'],input=patch,check=True)
+          for path,digest in expected.items():
+              assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,path
+              if path.endswith('.py'):ast.parse(Path(path).read_text())
+          Path('/tmp/sec-directory-manifest.json').write_text(json.dumps(expected,indent=2))
+          PY
+          git diff --check
+      - run: python -m pip install -r requirements.txt pip-audit
+      - name: Dependency security and complete backend suite with disposable PostgreSQL
+        run: |
+          pip-audit -r requirements.txt --progress-spinner off
+          python -m compileall -q .
+          python -m pytest tests -q --disable-warnings --junitxml=/tmp/sec-directory-tests.xml
+      - name: Full official SEC identity universe and multi-filer reconciliation
+        run: python verify_directory_sources.py > /tmp/sec-directory-live.log 2>&1
+      - name: Publish only validated application source
+        run: |
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = d61ac757e729d2699bf88cd33ad33b1db462102d
+          python - <<'PY'
+          from pathlib import Path
+          import json,hashlib,subprocess
+          expected=json.loads(Path('/tmp/sec-directory-manifest.json').read_text())
+          assert all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==h for p,h in expected.items())
+          subprocess.run(['git','add','--',*expected],check=True)
+          assert set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())==set(expected)
+          PY
+          git diff --cached --check
+          git config user.name 'Logan Release Validation'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'FIG 0.4.0: SEC-wide indexed filer directory and durable selected-firm imports'
+          git push origin HEAD:refs/heads/release/sec-filer-directory-20261113
+          git rev-parse HEAD > /tmp/sec-directory-release.txt
+          git archive --format=tar.gz HEAD > /tmp/sec-directory-source.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sec-filer-directory-validation
+          retention-days: 30
+          path: |
+            /tmp/sec-directory-tests.xml
+            /tmp/sec-directory-manifest.json
+            /tmp/sec-directory-live.log
+            /tmp/fig-universe-live.json
+            /tmp/fig-universe-catalogue.json
+            /tmp/sec-directory-release.txt
+            /tmp/sec-directory-source.tar.gz
