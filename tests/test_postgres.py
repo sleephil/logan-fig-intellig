@@ -12,7 +12,7 @@ def database(monkeypatch):
     import storage
     with storage.connect() as c:
         storage.setup(c)
-        c.execute('TRUNCATE fig_filings_v2,fig_import_runs,fig_import_events,fig_release_events RESTART IDENTITY')
+        c.execute('TRUNCATE fig_filings_v2,fig_import_runs,fig_import_events,fig_release_events,fig_market_sources,fig_market_summaries,fig_market_rejections,fig_market_queue,fig_market_generations,fig_market_reports,fig_market_relations,fig_market_state RESTART IDENTITY')
     return storage
 
 def test_commit_readback_idempotency_and_events(database):

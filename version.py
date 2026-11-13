@@ -1,6 +1,6 @@
 """Source-controlled release identity; deployment commit is supplied by Railway."""
 import os
-VERSION = '0.4.0'
+VERSION = '0.5.0'
 PARSER_VERSION = '13f-2'
 RELEASE_DATE = '2026-11-13'
 def release():
