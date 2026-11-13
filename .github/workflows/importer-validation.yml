@@ -38,7 +38,8 @@ jobs:
         run: |
           cp -R .release-build /tmp/fig-build
           test "$(git rev-parse origin/main)" = cd6135c81adb423ab1950f672066fd6a9a6d5fcd
-          git switch --detach cd6135c81adb423ab1950f672066fd6a9a6d5fcd
+          test "$(git rev-parse origin/release/fig-importer-20261113)" = 17e4f77e5c9cdd493eebec6dd4eb509d922921aa
+          git switch --detach 17e4f77e5c9cdd493eebec6dd4eb509d922921aa
           git switch -c release/fig-importer-20261113
           python - <<'PY'
           from pathlib import Path
@@ -52,6 +53,7 @@ jobs:
           name='.github/workflows/ci.yml'
           files[name]=files[name].replace("--health-cmd 'pg_isready -U postgres -d fig_test'",'--health-cmd "pg_isready -U postgres -d fig_test"')
           assert hashlib.sha256(files[name].encode()).hexdigest()=='f3fdadbc8edde18fc0a849a225b74937c2b4f96cd7bda35fe609f61d1f18a0f1'
+          assert Path(name).read_text()==files[name], 'CI must already be installed by authorized connector'
           manifest={}
           for name,text in files.items():
               p=Path(name);p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)
@@ -73,15 +75,17 @@ jobs:
         run: python verify_live_sources.py
       - name: Publish only validated candidate branch
         run: |
-          git fetch origin main
+          git fetch origin main release/fig-importer-20261113
           test "$(git rev-parse origin/main)" = cd6135c81adb423ab1950f672066fd6a9a6d5fcd
+          test "$(git rev-parse origin/release/fig-importer-20261113)" = 17e4f77e5c9cdd493eebec6dd4eb509d922921aa
           python - <<'PY'
           from pathlib import Path
           import json,hashlib,subprocess
           expected=json.loads(Path('/tmp/fig-manifest.json').read_text())
           assert all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==h for p,h in expected.items())
-          subprocess.run(['git','add','--',*expected],check=True)
-          assert set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())==set(expected)
+          app_files=set(expected)-{'.github/workflows/ci.yml'}
+          subprocess.run(['git','add','--',*app_files],check=True)
+          assert set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())==app_files
           PY
           git diff --cached --check
           git config user.name 'Logan Release Validation'
