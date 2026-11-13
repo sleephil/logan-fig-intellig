@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from ingest import PLATFORMS, SECClient, submissions, filing, bulk_archives, parse_bulk, MAX_ZIP
 import storage
+import filer_directory as directory
 from version import release
 
 def error_code(exc):
@@ -16,43 +17,58 @@ def error_code(exc):
     if message and len(message)<100 and all(c.isupper() or c.isdigit() or c=='_' for c in message):return message
     return type(exc).__name__.upper()
 
-def execute(job, *, bulk=False):
-    errors=[]; checked=0; imported=0
+def import_filer(job, code, client):
+    entity=directory.get(job.c,code); name=entity['name']; errors=[]; imported=0
+    job.progress(stage='discovering_filings',current_platform=name,current_accession='',checked_filings=0,new_filings=0)
+    try:
+        entries=submissions(code,client)
+        job.progress(total_filings=len(entries))
+        if not entries:
+            state='notice_only' if not any(f.startswith('13F-HR') for f in entity['forms']) and any(f.startswith('13F-NT') for f in entity['forms']) else 'no_holdings_in_window'
+            directory.finish(job.c,code,state)
+            return []
+        for n,entry in enumerate(entries):
+            acc=entry['accessionNumber']
+            job.progress(stage='checking_filing',current_accession=acc,bytes_downloaded=0)
+            try:
+                if not storage.verified(job.c,code,acc):
+                    snap=filing(code,entry,client)
+                    job.progress(stage='validating_and_saving')
+                    imported+=int(storage.save(job,snap))
+            except Exception as exc:
+                failure={'platform':name,'cik':code,'accession':acc,'code':error_code(exc)}
+                errors.append(failure);storage.event(job.c,job.id,'FIG_FILING_FAILED',**failure)
+            finally:job.progress(checked_filings=n+1,new_filings=imported)
+        count=job.c.execute('SELECT COUNT(*) FROM fig_filings_v2 WHERE cik=%s AND parser_version=%s',(code,storage.PARSER_VERSION)).fetchone()[0]
+        directory.finish(job.c,code,('partial' if count else 'failed') if errors else 'ready',errors[0]['code'] if errors else None)
+    except Exception as exc:
+        errors.append({'platform':name,'cik':code,'code':error_code(exc)})
+        directory.finish(job.c,code,'failed',error_code(exc))
+    return errors
+
+
+def execute(job, *, bulk=False, directory_refresh=True):
+    errors=[]
     try:
         client=SECClient(progress=job.progress)
+        # The import advisory lock makes this recovery safe across API/cron replicas.
+        job.c.execute("UPDATE fig_filer_requests SET status='queued' WHERE status='running'")
+        if directory_refresh:
+            errors.extend(directory.refresh(job,client))
+            for (code,) in job.c.execute('SELECT cik FROM fig_filer_directory WHERE tracked=TRUE').fetchall():
+                directory.request_load(job.c,code)
         if bulk:
+            codes=[r[0] for r in job.c.execute('SELECT cik FROM fig_filer_directory WHERE tracked=TRUE').fetchall()]
             for url in bulk_archives(client):
-                job.progress(stage='downloading_zip',source_url=url)
                 archive,digest=client.download(url,limit=MAX_ZIP)
-                with archive:
-                    snapshots=parse_bulk(archive,url,digest,PLATFORMS.values(),os.getenv('HISTORY_START','2023-09-30'),job.progress)
-                for snap in snapshots:
-                    imported+=int(storage.save(job,snap));checked+=1
-                    job.progress(checked_filings=checked,new_filings=imported)
-        for name,cik in PLATFORMS.items():
-            job.progress(stage='discovering_filings',current_platform=name,current_accession='')
-            try: entries=submissions(cik,client)
-            except Exception as exc:
-                errors.append({'platform':name,'code':error_code(exc)});continue
-            if not entries:
-                errors.append({'platform':name,'code':'NO_13F_FILINGS_FOUND'});continue
-            job.progress(total_filings=len(entries))
-            for entry in entries:
-                acc=entry['accessionNumber']
-                job.progress(stage='checking_filing',current_accession=acc,bytes_downloaded=0)
-                try:
-                    if not storage.verified(job.c,cik,acc):
-                        snap=filing(cik,entry,client)
-                        job.progress(stage='validating_and_saving')
-                        imported+=int(storage.save(job,snap))
-                except Exception as exc:
-                    failure={'platform':name,'accession':acc,'code':error_code(exc)}
-                    errors.append(failure);storage.event(job.c,job.id,'FIG_FILING_FAILED',**failure)
-                finally:
-                    checked+=1;job.progress(checked_filings=checked,new_filings=imported)
+                with archive:snaps=parse_bulk(archive,url,digest,codes,os.getenv('HISTORY_START','2023-09-30'),job.progress)
+                for snap in snaps:storage.save(job,snap)
+        while True:
+            code=directory.claim(job.c,job.id)
+            if code is None:break
+            errors.extend(import_filer(job,code,client))
         result='success' if not errors else 'partial' if storage.counts(job.c)['imported_filings'] else 'failed'
-        job.finish(result,errors)
-        return result
+        job.finish(result,errors);return result
     except Exception as exc:
         errors.append({'code':error_code(exc)})
         try:job.finish('failed',errors)
@@ -60,11 +76,22 @@ def execute(job, *, bulk=False):
         return 'failed'
     finally:job.close()
 
-def sync(*,bulk=False,trigger='scheduled'):
+
+def sync(*,bulk=False,trigger='scheduled',directory_refresh=True):
     job=storage.begin(trigger)
     if job is None:
         storage.emit('FIG_IMPORT_ALREADY_RUNNING');return 'already_running'
-    return execute(job,bulk=bulk)
+    return execute(job,bulk=bulk,directory_refresh=directory_refresh)
+
+
+def queued_worker(stop):
+    # Durable queue survives restarts; global import lock prevents duplicate workers.
+    while not stop.wait(15):
+        try:
+            with storage.connect() as c:
+                pending=c.execute("SELECT 1 FROM fig_filer_requests WHERE status IN ('queued','running') LIMIT 1").fetchone()
+            if pending:sync(trigger='queued-filer',directory_refresh=False)
+        except Exception as exc:storage.emit('FIG_QUEUE_CHECK_FAILED',code=error_code(exc))
 
 @asynccontextmanager
 async def lifespan(app):
@@ -73,7 +100,11 @@ async def lifespan(app):
         storage.emit('FIG_RELEASE_READY')
         if os.getenv('FIG_SYNC_ON_STARTUP','').lower()=='true':
             threading.Thread(target=sync,kwargs={'trigger':'startup'},daemon=True).start()
-    yield
+    stop=threading.Event()
+    if os.getenv('DATABASE_URL') and os.getenv('FIG_REQUEST_WORKER','true').lower()=='true':
+        threading.Thread(target=queued_worker,args=(stop,),daemon=True).start()
+    try:yield
+    finally:stop.set()
 
 app=FastAPI(title='Logan FIG Intelligence',version=release()['version'],lifespan=lifespan)
 
@@ -89,7 +120,8 @@ def home():return '<h1>Logan FIG Intelligence</h1><p>Private service. Open FIG I
 @app.get('/api/status')
 def status(req:Request):
     authorize(req)
-    with storage.connect() as c: return storage.status(c)
+    with storage.connect() as c:
+        result=storage.status(c);result['directory']=directory.status(c);return result
 
 @app.get('/api/version')
 def version(req:Request):
@@ -101,15 +133,33 @@ def version(req:Request):
 @app.get('/api/platforms')
 def platforms(req:Request):
     authorize(req)
-    with storage.connect() as c:snapshots=storage.latest(c)
-    return [{'name':name,'cik':cik,'filing_count':sum(s.cik==cik for s in snapshots),
-             'first_period':min((s.period for s in snapshots if s.cik==cik),default=None),
-             'last_period':max((s.period for s in snapshots if s.cik==cik),default=None)} for name,cik in PLATFORMS.items()]
+    with storage.connect() as c:return directory.listing(c)
+
+
+def require_filer(code):
+    try:code=directory.cik(code)
+    except ValueError as exc:raise HTTPException(400,'Invalid filer') from exc
+    with storage.connect() as c:entity=directory.get(c,code)
+    if not entity:raise HTTPException(404,'Unknown SEC filer')
+    return entity
+
+@app.get('/api/filer/{cik}')
+def filer_status(cik:str,req:Request):
+    authorize(req)
+    entity=require_filer(cik)
+    with storage.connect() as c:
+        row=c.execute('SELECT COUNT(DISTINCT accession),MIN(period),MAX(period) FROM fig_filings_v2 WHERE cik=%s AND parser_version=%s',
+            (entity['cik'],storage.PARSER_VERSION)).fetchone()
+    return {'name':entity['name'],'cik':entity['cik'],'forms':entity['forms'],
+            'last_filing':entity['last_filing'],'load_status':entity['load_status'] or ('ready' if row[0] else 'not_loaded'),
+            'load_error':entity['load_error'],'load_finished_at':entity['load_finished_at'],'run_id':entity['run_id'],
+            'filing_count':row[0],'first_period':row[1],'last_period':row[2],
+            'history_start':os.getenv('HISTORY_START','2023-09-30')}
 
 @app.get('/api/filings/{cik}')
 def reports(cik:str,req:Request):
     authorize(req)
-    if cik not in PLATFORMS.values():raise HTTPException(404,'Unknown filer')
+    entity=require_filer(cik);cik=entity['cik']
     with storage.connect() as c:snaps=storage.latest(c,cik)
     return [{'period':s.period,'accession':s.accession,'positions':len(s.rows),'reported_value_usd':s.expected_total,
              'form':s.form,'filing_date':s.filing_date,'amendment_type':s.amendment_type,'report_type':s.report_type,
@@ -133,14 +183,14 @@ def effective_periods(snaps):
 @app.get('/api/analysis/{cik}')
 def analysis(cik:str,req:Request):
     authorize(req)
-    if cik not in PLATFORMS.values():raise HTTPException(404,'Unknown filer')
+    entity=require_filer(cik);cik=entity['cik']
     from analysis import analyze
     with storage.connect() as c:snaps=storage.latest(c,cik)
     effective,issues=effective_periods(snaps)
     rows=[(p,r['issuer'],r['cusip'],r['title'],r['value_usd'],r['put_call'],r['share_type'])
           for p,details in effective.items() for r in details['rows']]
     result=analyze(rows)
-    result.update({'cik':cik,'reporting_entity':next(name for name,v in PLATFORMS.items() if v==cik),
+    result.update({'cik':cik,'reporting_entity':entity['name'],
         'amendment_issues':issues,'period_sources':{p:d['accessions'] for p,d in effective.items()},
         'reported_other_managers':[{'period':s.period,'accession':s.accession,'managers':s.managers} for s in snaps],
         **release()})
@@ -149,11 +199,11 @@ def analysis(cik:str,req:Request):
 @app.get('/api/managers/{cik}')
 def managers(cik:str, req:Request):
     authorize(req)
-    if cik not in PLATFORMS.values():raise HTTPException(404,'Unknown filer')
+    entity=require_filer(cik);cik=entity['cik']
     from manager_reporting import manager_report
     with storage.connect() as c:snaps=storage.latest(c,cik)
     result=manager_report(snaps)
-    result.update({'cik':cik,'reporting_entity':next(name for name,v in PLATFORMS.items() if v==cik),**release()})
+    result.update({'cik':cik,'reporting_entity':entity['name'],**release()})
     return result
 
 @app.post('/api/sync')
@@ -171,3 +221,15 @@ def manual(req:Request):
         finally: job.close()
         raise HTTPException(503,'WORKER_START_FAILED') from exc
     return {'queued':True,'run_id':job.id,'status':'running'}
+
+@app.post('/api/load/{cik}')
+def load_filer(cik:str,req:Request):
+    authorize(req)
+    entity=require_filer(cik)
+    try:
+        SECClient()
+        with storage.connect() as c:state=directory.request_load(c,entity['cik'])
+        threading.Thread(target=sync,kwargs={'trigger':'selected-filer','directory_refresh':False},daemon=True).start()
+    except Exception as exc:raise HTTPException(503,error_code(exc)) from exc
+    return {'queued':True,'cik':entity['cik'],'status':state['load_status'],
+            'reason':'Selected-filer request saved; progress is available in the selected-firm status.'}

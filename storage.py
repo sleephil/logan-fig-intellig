@@ -49,6 +49,9 @@ def setup(c):
       recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), changes JSONB NOT NULL,
       PRIMARY KEY(version,commit_sha,changes_sha256))''')
 
+    import filer_directory
+    filer_directory.setup(c)
+
 def jsonb(value):
     from psycopg.types.json import Jsonb
     return Jsonb(value)

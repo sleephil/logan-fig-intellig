@@ -141,10 +141,12 @@ def test_manager_api_permission_and_schema(monkeypatch):
     monkeypatch.setenv('FIG_API_TOKEN','synthetic-test-token')
     monkeypatch.setattr(storage,'connect',lambda:nullcontext(object()))
     monkeypatch.setattr(storage,'latest',lambda c,cik:[snapshot()])
+    import filer_directory
+    monkeypatch.setattr(filer_directory,'get',lambda c,code:{'cik':code,'name':'Synthetic reporting entity'})
     c=TestClient(app)
     assert c.get('/api/managers/0001269119').status_code==403
     h={'X-FIG-Token':'synthetic-test-token'}
-    assert c.get('/api/managers/invalid',headers=h).status_code==404
+    assert c.get('/api/managers/invalid',headers=h).status_code==400
     r=c.get('/api/managers/0001269119',headers=h)
     assert r.status_code==200 and len(r.json()['managers'])==2 and 'positions' not in r.json()
-    assert r.json()['version']=='0.3.0'
+    assert r.json()['version']=='0.4.0'
