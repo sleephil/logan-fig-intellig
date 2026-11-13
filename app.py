@@ -27,6 +27,8 @@ def sync():
     imported=0
     try:
         with connect() as c:
+            if not c.execute("SELECT pg_try_advisory_lock(8726319)").fetchone()[0]:
+                return
             setup(c)
             run_id=c.execute("INSERT INTO ingest_runs(status) VALUES('running') RETURNING id").fetchone()[0]
             c.commit()
@@ -96,5 +98,10 @@ def reports(cik:str,req:Request):
 @app.post("/api/sync")
 def manual(req:Request):
     authorize(req)
+    with connect() as c:
+        setup(c)
+        active=c.execute("SELECT started_at FROM ingest_runs WHERE status='running' AND started_at>NOW()-INTERVAL '3 hours' ORDER BY id DESC LIMIT 1").fetchone()
+        if active:
+            return {"queued":False,"reason":"An import is already running"}
     threading.Thread(target=sync,daemon=True).start()
     return {"queued":True}
