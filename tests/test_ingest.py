@@ -130,8 +130,9 @@ def test_version_and_private_apis_stay_protected(monkeypatch):
     from fastapi.testclient import TestClient
     from app import app
     monkeypatch.setenv('FIG_API_TOKEN','synthetic-token');c=TestClient(app)
-    for url in ['/api/status','/api/version','/api/platforms','/api/filings/0001269119','/api/analysis/0001269119']:
+    for url in ['/api/status','/api/version','/api/platforms','/api/filings/0001269119','/api/analysis/0001269119','/api/managers/0001269119']:
         assert c.get(url).status_code==403
     assert c.post('/api/sync').status_code==403
     result=c.get('/api/version',headers={'X-FIG-Token':'synthetic-token'}).json()
-    assert result['version']=='0.2.0' and '/fig-intelligence' in result['changes'][0]['changed_pages']
+    assert result['version']=='0.3.0' and result['changes'][0]['version']==result['version']
+    assert '/fig-intelligence' in result['changes'][0]['changed_pages']

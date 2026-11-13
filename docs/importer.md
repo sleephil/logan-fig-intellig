@@ -53,3 +53,21 @@ The Toolkit release tracker maps this change to the page and API paths. The FIG
 page displays its frontend release and the live backend version/commit. Neither
 repository history nor application logs alone imply regulatory certification,
 independent backup/restore validation, tamper-proof storage or WORM compliance.
+
+## Manager report v0.3.0
+
+`/api/managers/{cik}` aggregates the SEC other-included-manager list and the
+information table's Other Manager references from already verified snapshots.
+Sequence numbers are resolved within each accession, including amendments.
+Stable CIK/13F identifiers are preferred; exact normalized names are used where
+identifiers are absent. Conflicting identifiers are unresolved, never merged.
+The report reconciles single-linked, jointly linked (once), unassigned, unresolved,
+and options-reference values to the effective filing total. Manager columns that
+include shared attribution are not additive. No arbitrary split is invented.
+Absent managers are not reported, not zero; missing quarters do not get quarter
+change calculations. Pairs use adjacent, complete, non-shared manager records,
+opposite changes and magnitude ratio >=0.5, ranked by ratio then smaller amount.
+At most 20 candidates per interval; similarity is not a transfer probability.
+Public definitions: https://www.sec.gov/rules-regulations/staff-guidance/frequently-asked-questions-about-form-13f (questions 37 and 48).
+This endpoint reports covered holdings, not comprehensive platform assets, true
+flows, return-adjusted flows or independently verified external relationships.
