@@ -1,3 +1,9 @@
+## FIG 0.4.0 - 2026-11-13 - SEC-wide filer directory
+- Replace one-firm whitelist with official SEC quarterly master-index identity directory, 1994 onward.
+- Keep directory discovery separate from reconciled holdings; include notices and historical filers without invented balances.
+- Use a durable, deduplicated selected-filer queue and existing cross-process import lock; daily checks refresh the directory and previously requested firms.
+- Retain source hashes, explicit incomplete/stale coverage, importer safeguards, all original snapshots and independent version records.
+
 ## 0.3.0 - 2026-11-13 - Outside-manager reporting
 - Added authenticated `/api/managers/{cik}` over existing reconciled snapshots; no importer or storage migration.
 - Totals, quarter/year changes, all-period history and paired opposite changes use accession-local manager mappings, stable IDs where present and conservative exact names otherwise.
