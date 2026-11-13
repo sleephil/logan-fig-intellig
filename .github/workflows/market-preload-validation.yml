@@ -2,22 +2,105 @@ name: Market preload and reverse reporting validation
 on:
   push:
     branches: [work/market-preload-reverse-20261113]
-    paths: ['.github/workflows/market-preload-validation.yml']
+    paths: ['.github/workflows/market-preload-validation.yml', '.release-build/**']
 permissions:
-  contents: read
+  contents: write
+concurrency:
+  group: fig-market-preload-validation
+  cancel-in-progress: true
 jobs:
-  source:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fig_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d fig_test"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      PYTHONPATH: .
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fig_test
+      SEC_USER_AGENT: Logan Capital Management sslee@logancapital.com
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - run: |
-          mkdir -p /tmp/fig-market-source
-          git archive --format=tar.gz 29666d73d44cfa58f1df7bbb6f5e402e63db7c3b > /tmp/fig-market-source/backend.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/setup-python@v5
         with:
-          name: fig-market-source
-          path: /tmp/fig-market-source/
-          retention-days: 7
+          python-version: '3.13'
+      - name: Reconstruct and hash-check exact candidate
+        run: |
+          cp -R .release-build /tmp/fig-market-build
+          test "$(git rev-parse origin/main)" = 29666d73d44cfa58f1df7bbb6f5e402e63db7c3b
+          git switch --detach 29666d73d44cfa58f1df7bbb6f5e402e63db7c3b
+          git switch -c release/market-preload-reverse-20261113
+          python - <<'PY'
+          from pathlib import Path
+          import base64,lzma,json,hashlib,subprocess,ast
+          encoded=''.join(p.read_text().strip() for p in sorted(Path('/tmp/fig-market-build').glob('market-*.xz64')))
+          raw=lzma.decompress(base64.b64decode(encoded,validate=True))
+          assert hashlib.sha256(raw).hexdigest()=='f339be324ba17a7ec3fa78c81466af553da88581bd7b6638e783642b066e694b'
+          payload=json.loads(raw);expected=payload['hashes']
+          assert payload['base']=='29666d73d44cfa58f1df7bbb6f5e402e63db7c3b'
+          assert len(expected)==16 and all(not p.startswith(('.github/','.release-build/')) for p in expected)
+          patch=payload['patch'].encode()
+          subprocess.run(['git','apply','--check','-'],input=patch,check=True)
+          subprocess.run(['git','apply','-'],input=patch,check=True)
+          for path,digest in expected.items():
+              assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,path
+              if path.endswith('.py'):ast.parse(Path(path).read_text())
+          subprocess.run(['git','add','-N','--',*expected],check=True)
+          subprocess.run(['git','diff','--check'],check=True)
+          Path('/tmp/market-manifest.json').write_text(json.dumps(expected,indent=2))
+          PY
+      - run: python -m pip install -r requirements.txt pip-audit==2.9.0
+      - name: Blocking audits and complete importer/database regressions
+        run: |
+          pip-audit -r requirements.txt --progress-spinner off
+          python -m compileall -q .
+          python -m pytest tests -q --disable-warnings --junitxml=/tmp/market-tests.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root=ET.parse('/tmp/market-tests.xml').getroot()
+          assert not list(root.iter('skipped')),'No database test may be skipped'
+          PY
+      - name: Full public archive and independent reverse-query verification
+        run: timeout 1000 python verify_market_sources.py
+      - name: Publish only exact validated application changes
+        run: |
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = 29666d73d44cfa58f1df7bbb6f5e402e63db7c3b
+          python - <<'PY'
+          from pathlib import Path
+          import json,hashlib,subprocess
+          expected=json.loads(Path('/tmp/market-manifest.json').read_text())
+          assert all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==h for p,h in expected.items())
+          subprocess.run(['git','add','--',*expected],check=True)
+          assert set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())==set(expected)
+          PY
+          git diff --cached --check
+          git config user.name 'Logan Release Validation'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'FIG 0.5.0: compact market preload and indexed reverse-manager reports'
+          git push origin HEAD:refs/heads/release/market-preload-reverse-20261113
+          git rev-parse HEAD > /tmp/market-release.txt
+          git archive --format=tar.gz HEAD > /tmp/market-validated-source.tar.gz
+      - name: Retain inspectable validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fig-market-preload-validation
+          retention-days: 30
+          path: |
+            /tmp/market-tests.xml
+            /tmp/market-manifest.json
+            /tmp/fig-market-source-evidence.json
+            /tmp/fig-market-reverse-example.json
+            /tmp/market-release.txt
+            /tmp/market-validated-source.tar.gz
