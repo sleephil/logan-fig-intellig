@@ -1,5 +1,23 @@
 [
   {
+    "version": "0.5.0",
+    "date": "2026-11-13",
+    "title": "Market-wide manager preload and reverse lookup",
+    "changed_pages": [
+      "/fig-intelligence",
+      "/api/market/status",
+      "/api/market/managers",
+      "/api/market/reverse"
+    ],
+    "changes": [
+      "Preload all filers in the existing September 2023-onward holdings window from official bulk ZIPs, then checkpoint individual newer filings. Keep the 1994-onward identity directory separate.",
+      "Store compact reconciled accession-level manager buckets, not duplicate security histories; publish indexed firm-manager-quarter generations outside report requests.",
+      "Add protected manager-to-reporting-firms lookup, gross reported attribution totals, same-firm comparable changes, histories and explicit partial coverage.",
+      "Preserve SEC source hashes, rejected filings, shared-attribution and missing-data warnings; totals across reporters may overlap and are not verified client assets or flows.",
+      "Use additive isolated FIG tables and retain raw snapshots, source revisions, access restrictions, trading systems and existing page behavior."
+    ]
+  },
+  {
     "version": "0.4.0",
     "date": "2026-11-13",
     "title": "SEC-wide filer directory and selected-firm history loading",

@@ -78,3 +78,31 @@ The selector includes all 13F filing identities discovered in SEC quarterly mast
 Selecting an unloaded entity and choosing Load/refresh this firm saves a durable deduplicated queue request. A single advisory-locked worker downloads that CIK's individual filings using the existing HISTORY_START (default 2023-09-30), validates/saves them using the existing importer, then updates the firm's status. Requested firms join subsequent scheduled checks. The directory alone never starts thousands of full-history imports. Queue requests survive process restart, and an API worker resumes them. Notifications and statuses distinguish queued/running/ready/partial/failed, notice-only, and no holdings in the configured window. Notice filings are not holdings and are not zero assets. Other-manager disclosures vary across filers; absence is not evidence that no external mandates exist. Existing manager amounts, attribution, style uncertainty and pair caveats remain unchanged.
 
 Additive schema: fig_filer_directory, fig_directory_sources, fig_directory_checks, fig_filer_requests. No existing rows or permissions are removed. All APIs retain the same private token boundary; Toolkit keeps its existing Entra and origin checks. No extra credentials or subscriptions are required.
+
+
+## Market-wide preload and reverse reporting (0.5.0)
+The scheduled FIG worker preloads the existing `HISTORY_START` window (default
+2023-09-30) for all reporting entities. `FIG_MARKET_PRELOAD=false` disables this
+stage without changing the original importer. No new infrastructure is required.
+Bulk archives are downloaded once, stream-read and reduced to manager-reference
+buckets. A disk-backed duplicate row-ID check bounds memory. Complete raw counts
+and USD totals must reconcile before a filing is accepted. Bad filings remain in
+an explicit rejection ledger, never silently assigned zero assets.
+
+The recent EDGAR index fills the gap after the newest published archive. Each
+accession is checkpointed, retried at most twice per daily attempt, and reattempted
+on a later day after failure. Restart resumes rather than starts over. Index
+coverage and holdings coverage are separate; the current filing season can still
+be incomplete even after a successful availability check.
+
+Report requests perform only reads of the indexed firm-manager-quarter table and
+published report generation. No browser request builds the market data. A
+complete generation is published atomically; partial validated source coverage
+is explicitly marked. Old derived generations may be retired after a grace
+period; source summaries, raw snapshots and audit events are retained.
+
+Reverse totals are gross attribution across legal reporting entities, potentially
+with overlapping holdings. Do not call them unique assets, total AUM, confirmed
+customer relationships or measured flows. Quarter-change totals use only the
+same comparable reporting firms. Exact names without stable IDs carry an explicit
+identity limitation; fuzzy matches are never auto-merged.

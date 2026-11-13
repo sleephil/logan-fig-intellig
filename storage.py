@@ -51,6 +51,8 @@ def setup(c):
 
     import filer_directory
     filer_directory.setup(c)
+    import market_store
+    market_store.setup(c)
 
 def jsonb(value):
     from psycopg.types.json import Jsonb

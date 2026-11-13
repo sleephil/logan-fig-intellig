@@ -107,7 +107,7 @@ def pct(change, previous):
     return round(change / previous * 100, 4) if change is not None and previous else None
 
 
-def manager_report(snapshots):
+def manager_report(snapshots, *, identity_index=None):
     snapshots = list(snapshots)
     if len({s.cik for s in snapshots}) > 1: raise ValueError('MIXED_FILER_MANAGER_REPORT')
     seen = {}; unique = []
@@ -117,7 +117,7 @@ def manager_report(snapshots):
             if s.checksum != seen[s.accession]: raise ValueError('CONFLICTING_ACCESSION_REVISIONS')
             continue
         seen[s.accession] = s.checksum; unique.append(s)
-    identities = IdentityIndex(unique)
+    identities = identity_index or IdentityIndex(unique)
     groups = defaultdict(list)
     for s in unique: groups[s.period].append(s)
     periods = []; issues = []; history = defaultdict(dict); summaries = []
