@@ -2,86 +2,99 @@ name: FIG importer validation
 on:
   push:
     branches: [work/fig-importer-20261113]
-    paths: [.github/workflows/importer-validation.yml]
+    paths: [.github/workflows/importer-validation.yml, '.release-build/**']
 permissions:
-  contents: read
+  contents: write
+concurrency:
+  group: fig-importer-isolated
+  cancel-in-progress: true
 jobs:
-  inspect:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fig_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U postgres -d fig_test'
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      PYTHONPATH: .
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fig_test
+      SEC_USER_AGENT: Logan Capital Management FIG Research sslee@logancapital.com
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Snapshot unchanged source
-        run: |
-          mkdir -p /tmp/fig-inspect
-          git archive --format=tar.gz --output=/tmp/fig-inspect/source.tar.gz cd6135c81adb423ab1950f672066fd6a9a6d5fcd
-      - name: Check official SEC XML and ZIP paths without any production credentials
-        run: |
-          python - <<'PY'
-          import urllib.request,json,time,zipfile,io,csv,hashlib
-          from pathlib import Path
-          out=Path('/tmp/fig-inspect')
-          ua='Logan Capital Management FIG Research sslee@logancapital.com'
-          urls={'submissions':'https://data.sec.gov/submissions/CIK0001269119.json','bulk_index':'https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets','bulk_zip':'https://www.sec.gov/files/datastandardsinnovation/data/form-13f-data-sets/01jun2026-31aug2026_form13f.zip'}
-          receipt={}
-          for name,url in urls.items():
-              try:
-                  request=urllib.request.Request(url,headers={'User-Agent':ua})
-                  with urllib.request.urlopen(request,timeout=60) as response: data=response.read(160_000_001)
-                  if len(data)>160_000_000: raise ValueError('Download limit exceeded')
-                  receipt[name]={'url':url,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}
-                  if name=='submissions':
-                      (out/'submissions.json').write_bytes(data)
-                      j=json.loads(data);receipt[name]['filer']=j.get('name')
-                      a=j['filings']['recent']; entries=[dict(zip(a,values)) for values in zip(*a.values())]
-                      matches=[e for e in entries if e['form'] in ('13F-HR','13F-HR/A')]
-                      receipt[name]['recent_filings']=matches[:5]
-                      if matches:
-                          e=matches[0];base='https://www.sec.gov/Archives/edgar/data/1269119/'+e['accessionNumber'].replace('-','')+'/'
-                          time.sleep(.5)
-                          try:
-                              with urllib.request.urlopen(urllib.request.Request(base+'index.json',headers={'User-Agent':ua}),timeout=30) as r: idx=json.load(r)
-                              (out/'filing-index.json').write_text(json.dumps(idx))
-                              for item in idx['directory']['item']:
-                                  n=item['name']
-                                  if n.lower().endswith('.xml') and '/' not in n:
-                                      time.sleep(.5)
-                                      with urllib.request.urlopen(urllib.request.Request(base+n,headers={'User-Agent':ua}),timeout=30) as r: x=r.read(15_000_001)
-                                      if len(x)>15_000_000:raise ValueError('XML limit')
-                                      (out/n).write_bytes(x)
-                          except Exception as err:receipt['individual_xml_error']=str(err)
-                  elif name=='bulk_index':(out/'bulk-index.html').write_bytes(data)
-                  else:
-                      z=zipfile.ZipFile(io.BytesIO(data));receipt[name]['members']=[{'name':i.filename,'size':i.file_size} for i in z.infolist()]
-                      selected=set(); meta={}
-                      for n in z.namelist():
-                          if n.upper().endswith('SUBMISSION.TSV'):
-                              with z.open(n) as f:
-                                  rows=csv.DictReader(io.TextIOWrapper(f,encoding='utf-8-sig'),delimiter='\t')
-                                  receipt[name]['submission_fields']=rows.fieldnames
-                                  for r in rows:
-                                      if str(r.get('CIK','')).lstrip('0')=='1269119':meta[r['ACCESSION_NUMBER']]=r;selected.add(r['ACCESSION_NUMBER'])
-                      for n in z.namelist():
-                          if n.upper().endswith(('.TSV','.TXT')) and 'README' not in n.upper():
-                              with z.open(n) as f:
-                                  rows=csv.DictReader(io.TextIOWrapper(f,encoding='utf-8-sig'),delimiter='\t')
-                                  fields=rows.fieldnames
-                                  if not fields or 'ACCESSION_NUMBER' not in fields:continue
-                                  destination=out/Path(n).name
-                                  with destination.open('w',newline='') as sink:
-                                      writer=csv.DictWriter(sink,fieldnames=fields,delimiter='\t');writer.writeheader()
-                                      for r in rows:
-                                          if r.get('ACCESSION_NUMBER') in selected:writer.writerow(r)
-                      receipt[name]['selected_accessions']=sorted(selected)
-              except Exception as exc:receipt[name]={'url':url,'error':str(exc)}
-              time.sleep(.5)
-          (out/'receipt.json').write_text(json.dumps(receipt,indent=2))
-          print(json.dumps(receipt,indent=2))
-          PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/setup-python@v5
         with:
-          name: fig-importer-inspection
-          path: /tmp/fig-inspect/
-          retention-days: 7
+          python-version: '3.12'
+      - name: Reconstruct exact candidate on unchanged production
+        run: |
+          cp -R .release-build /tmp/fig-build
+          test "$(git rev-parse origin/main)" = cd6135c81adb423ab1950f672066fd6a9a6d5fcd
+          git switch --detach cd6135c81adb423ab1950f672066fd6a9a6d5fcd
+          git switch -c release/fig-importer-20261113
+          python - <<'PY'
+          from pathlib import Path
+          import base64,lzma,hashlib,json,ast
+          encoded=''.join((Path('/tmp/fig-build')/('candidate.part'+str(i))).read_text().strip() for i in (1,2))
+          raw=lzma.decompress(base64.b64decode(encoded,validate=True))
+          assert hashlib.sha256(raw).hexdigest()=='2dd289d56ae8f1276aa6a653ec60726cce4763f1938dca91e5845861416485f2','Candidate transport mismatch'
+          files=json.loads(raw)
+          expected={'.github/workflows/ci.yml','CHANGELOG.json','CHANGELOG.md','analysis.py','app.py','docs/importer.md','ingest.py','requirements.txt','storage.py','tests/test_ingest.py','tests/test_postgres.py','verify_live_sources.py','version.py','worker.py'}
+          assert set(files)==expected
+          manifest={}
+          for name,text in files.items():
+              p=Path(name);p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)
+              if name.endswith('.py'):ast.parse(text)
+              manifest[name]=hashlib.sha256(p.read_bytes()).hexdigest()
+          Path('/tmp/fig-manifest.json').write_text(json.dumps(manifest,indent=2))
+          print('Reconstructed exact fourteen-file importer candidate')
+          PY
+          git diff --check
+      - run: python -m pip install -r requirements.txt pip-audit
+      - name: Blocking dependency audit and production imports
+        run: |
+          pip-audit -r requirements.txt --progress-spinner off
+          python -m compileall -q app.py storage.py ingest.py analysis.py worker.py version.py
+          python -c "import app; print(app.release())"
+      - name: All importer, authorization and PostgreSQL tests
+        run: python -m pytest tests -q --junitxml=/tmp/fig-tests.xml
+      - name: Real SEC XML and ZIP reconciliation plus independent database and API readback
+        run: python verify_live_sources.py
+      - name: Publish only validated candidate branch
+        run: |
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = cd6135c81adb423ab1950f672066fd6a9a6d5fcd
+          python - <<'PY'
+          from pathlib import Path
+          import json,hashlib,subprocess
+          expected=json.loads(Path('/tmp/fig-manifest.json').read_text())
+          assert all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==h for p,h in expected.items())
+          subprocess.run(['git','add','--',*expected],check=True)
+          assert set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())==set(expected)
+          PY
+          git diff --cached --check
+          git config user.name 'Logan Release Validation'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Repair and verify SEC XML and ZIP importer with durable progress and versioned change records'
+          git push origin HEAD:refs/heads/release/fig-importer-20261113
+          git rev-parse HEAD > /tmp/fig-release-sha.txt
+          python -m pip freeze > /tmp/fig-dependencies.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fig-importer-validation
+          path: |
+            /tmp/fig-tests.xml
+            /tmp/fig-live-verification.json
+            /tmp/fig-manifest.json
+            /tmp/fig-release-sha.txt
+            /tmp/fig-dependencies.txt
+          retention-days: 30
