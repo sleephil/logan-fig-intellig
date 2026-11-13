@@ -13,6 +13,8 @@ jobs:
       SEC_USER_AGENT: 'Logan Capital Management sslee@logancapital.com'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -32,6 +34,7 @@ jobs:
           print(json.dumps([{'period':s['period'],'managers':len(s['managers']),'rows':len(s['rows'])} for s in snapshots]))
           PY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: manager-report-sources
           path: /tmp/manager-sources/
