@@ -1,0 +1,23 @@
+name: Market preload and reverse reporting validation
+on:
+  push:
+    branches: [work/market-preload-reverse-20261113]
+    paths: ['.github/workflows/market-preload-validation.yml']
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: |
+          mkdir -p /tmp/fig-market-source
+          git archive --format=tar.gz 29666d73d44cfa58f1df7bbb6f5e402e63db7c3b > /tmp/fig-market-source/backend.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fig-market-source
+          path: /tmp/fig-market-source/
+          retention-days: 7
