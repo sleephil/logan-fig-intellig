@@ -1,0 +1,34 @@
+name: FIG production HTTP verification
+on:
+  push:
+    branches: [work/fig-importer-20261113]
+    paths: [.github/workflows/live-health-verification.yml]
+permissions:
+  contents: read
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Verify deployed FIG version and anonymous API denial
+        run: |
+          python - <<'PY'
+          import urllib.request,urllib.error,json
+          from pathlib import Path
+          base='https://logan-fig-api-production.up.railway.app'
+          with urllib.request.urlopen(base+'/health',timeout=30) as response:
+              body=json.load(response);status=response.status
+          assert status==200 and body['version']=='0.2.0' and body['commit']=='8adf038769c4e5192f881813023976576ea503ec',body
+          try:
+              urllib.request.urlopen(base+'/api/status',timeout=30)
+              raise AssertionError('Anonymous status request must be denied')
+          except urllib.error.HTTPError as error:
+              assert error.code==403,error.code
+          receipt={'health_status':status,'health':body,'anonymous_api_status':403}
+          Path('/tmp/fig-production-http.json').write_text(json.dumps(receipt,indent=2));print(json.dumps(receipt))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fig-production-http
+          path: /tmp/fig-production-http.json
+          retention-days: 30
