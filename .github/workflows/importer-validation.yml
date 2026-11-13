@@ -21,7 +21,7 @@ jobs:
           POSTGRES_DB: fig_test
         ports: ['5432:5432']
         options: >-
-          --health-cmd 'pg_isready -U postgres -d fig_test'
+          --health-cmd "pg_isready -U postgres -d fig_test"
           --health-interval 10s --health-timeout 5s --health-retries 5
     env:
       PYTHONPATH: .
@@ -49,6 +49,9 @@ jobs:
           files=json.loads(raw)
           expected={'.github/workflows/ci.yml','CHANGELOG.json','CHANGELOG.md','analysis.py','app.py','docs/importer.md','ingest.py','requirements.txt','storage.py','tests/test_ingest.py','tests/test_postgres.py','verify_live_sources.py','version.py','worker.py'}
           assert set(files)==expected
+          name='.github/workflows/ci.yml'
+          files[name]=files[name].replace("--health-cmd 'pg_isready -U postgres -d fig_test'",'--health-cmd "pg_isready -U postgres -d fig_test"')
+          assert hashlib.sha256(files[name].encode()).hexdigest()=='f3fdadbc8edde18fc0a849a225b74937c2b4f96cd7bda35fe609f61d1f18a0f1'
           manifest={}
           for name,text in files.items():
               p=Path(name);p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)
