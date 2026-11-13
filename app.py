@@ -98,6 +98,28 @@ def reports(cik:str,req:Request):
     authorize(req)
     with connect() as c:
         return [{"period":str(r[0]),"accession":r[1],"positions":r[2],"reported_value_usd":r[3]} for r in c.execute("SELECT f.period,f.accession,count(h.row_id),coalesce(sum(h.value_usd),0) FROM filings f LEFT JOIN holdings h USING(cik,accession) WHERE f.cik=%s GROUP BY f.period,f.accession ORDER BY f.period DESC",(cik,)).fetchall()]
+@app.get("/api/analysis/{cik}")
+def analysis(cik:str,req:Request):
+    authorize(req)
+    if cik not in PLATFORMS.values():raise HTTPException(404,"Unknown filer")
+    from analysis import analyze
+    with connect() as c:
+        # One filing per quarter; prefer amended filings and most recently ingested.
+        rows=c.execute("""
+            WITH ranked AS (
+              SELECT cik,accession,period,ROW_NUMBER() OVER
+              (PARTITION BY cik,period ORDER BY (form='13F-HR/A') DESC,ingested_at DESC,accession DESC) rn
+              FROM filings WHERE cik=%s
+            )
+            SELECT f.period,h.issuer,h.cusip,h.title,h.value_usd
+            FROM ranked f JOIN holdings h USING(cik,accession)
+            WHERE f.rn=1 ORDER BY f.period,h.row_id
+        """,(cik,)).fetchall()
+    result=analyze(rows)
+    result["cik"]=cik
+    result["reporting_entity"]=next((name for name,value in PLATFORMS.items() if value==cik),cik)
+    return result
+
 @app.post("/api/sync")
 def manual(req:Request):
     authorize(req)
