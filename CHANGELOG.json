@@ -1,10 +1,45 @@
 [
   {
+    "version": "0.3.0",
+    "date": "2026-11-13",
+    "title": "Outside-manager assets, history and paired changes",
+    "reason": "Make manager-level research the default instead of individual securities.",
+    "changed_pages": [
+      "/fig-intelligence",
+      "/api/managers/{cik}",
+      "/toolkit/versions/fig-intelligence"
+    ],
+    "changes": [
+      "Aggregate stored reconciled filing rows through accession-local other-manager sequence mappings.",
+      "Retain stable-ID or conservative exact-name identity across quarters; never join managers by sequence number.",
+      "Show reported assets, quarter/year changes, all available periods and ranked opposite-change pairs.",
+      "Reconcile single-linked, jointly linked, unassigned, unresolved and options values without double counting.",
+      "Distinguish absent managers from zero, missing quarters from comparable quarters, and additive amendments from restatements.",
+      "Keep source accessions, hashes, method version and limitations in the report."
+    ],
+    "unchanged": [
+      "Importer schedule and source snapshots",
+      "Authentication and user permissions",
+      "No production schema changes or client/trading changes"
+    ],
+    "limitations": [
+      "13F-covered reported holdings only; not total AUM, a complete platform census or verified transfers.",
+      "Other included managers can include affiliates; external relationship is not independently verified."
+    ]
+  },
+  {
     "version": "0.2.0",
     "date": "2026-11-13",
     "title": "Verified SEC importer and visible import lifecycle",
     "reason": "Repair unverified/manual imports and make source processing auditable.",
-    "changed_pages": ["/fig-intelligence", "/fig-intelligence/api/status", "/fig-intelligence/api/refresh", "/fig-intelligence/api/filings/{cik}", "/fig-intelligence/api/analysis/{cik}", "/toolkit/versions"],
+    "changed_pages": [
+      "/fig-intelligence",
+      "/fig-intelligence/api/status",
+      "/fig-intelligence/api/refresh",
+      "/fig-intelligence/api/filings/{cik}",
+      "/fig-intelligence/api/analysis/{cik}",
+      "/toolkit/versions"
+    ],
     "changes": [
       "Use the same declared SEC contact setting for manual and scheduled imports.",
       "Support dated individual XML filings and bounded streaming reads of official ZIP/TSV archives.",
@@ -16,16 +51,32 @@
       "Verify committed filings through an independent database connection and retain append-only import/release events.",
       "Handle restatement and new-holdings amendments separately; preserve source accessions for each period."
     ],
-    "unchanged": ["Toolkit authentication and user permissions", "Client portfolios and trading workflows", "Other Toolkit tools", "Existing daily SEC schedule"],
-    "limitations": ["Daily checks do not create daily holdings; 13F remains periodic public disclosure.", "Coverage remains the configured Oppenheimer Asset Management reporting entity, not the entire brokerage platform.", "Change records support compliance review; no claim of regulatory certification or immutable WORM retention."]
+    "unchanged": [
+      "Toolkit authentication and user permissions",
+      "Client portfolios and trading workflows",
+      "Other Toolkit tools",
+      "Existing daily SEC schedule"
+    ],
+    "limitations": [
+      "Daily checks do not create daily holdings; 13F remains periodic public disclosure.",
+      "Coverage remains the configured Oppenheimer Asset Management reporting entity, not the entire brokerage platform.",
+      "Change records support compliance review; no claim of regulatory certification or immutable WORM retention."
+    ]
   },
   {
     "version": "0.1.0",
     "date": "2026-11-13",
     "title": "Initial FIG research prototype",
     "reason": "Retrospective baseline record for commit cd6135c81adb423ab1950f672066fd6a9a6d5fcd.",
-    "changed_pages": ["/fig-intelligence"],
-    "changes": ["Initial XML loader, isolated FIG database, Toolkit gateway, filing history and exploratory trends."],
-    "limitations": ["No reconciled live import had been established at baseline.", "Initial analysis had a dollar scaling defect; manual import service lacked SEC_USER_AGENT."]
+    "changed_pages": [
+      "/fig-intelligence"
+    ],
+    "changes": [
+      "Initial XML loader, isolated FIG database, Toolkit gateway, filing history and exploratory trends."
+    ],
+    "limitations": [
+      "No reconciled live import had been established at baseline.",
+      "Initial analysis had a dollar scaling defect; manual import service lacked SEC_USER_AGENT."
+    ]
   }
 ]

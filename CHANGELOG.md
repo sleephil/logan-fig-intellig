@@ -1,3 +1,9 @@
+## 0.3.0 - 2026-11-13 - Outside-manager reporting
+- Added authenticated `/api/managers/{cik}` over existing reconciled snapshots; no importer or storage migration.
+- Totals, quarter/year changes, all-period history and paired opposite changes use accession-local manager mappings, stable IDs where present and conservative exact names otherwise.
+- Joint attribution, unresolved and unassigned rows, options reference values, missing periods and amendments remain explicit and reconcilable. No asserted money transfers or total-manager AUM.
+- Source accessions, source/snapshot hashes and method version retained. Toolkit page changes have a separate frontend release record.
+
 # FIG Intelligence change log
 
 ## 0.2.0 - 2026-11-13 - Verified SEC importer

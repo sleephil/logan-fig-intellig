@@ -146,6 +146,16 @@ def analysis(cik:str,req:Request):
         **release()})
     return result
 
+@app.get('/api/managers/{cik}')
+def managers(cik:str, req:Request):
+    authorize(req)
+    if cik not in PLATFORMS.values():raise HTTPException(404,'Unknown filer')
+    from manager_reporting import manager_report
+    with storage.connect() as c:snaps=storage.latest(c,cik)
+    result=manager_report(snaps)
+    result.update({'cik':cik,'reporting_entity':next(name for name,v in PLATFORMS.items() if v==cik),**release()})
+    return result
+
 @app.post('/api/sync')
 def manual(req:Request):
     authorize(req)
