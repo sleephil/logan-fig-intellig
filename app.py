@@ -1,132 +1,163 @@
-import os,threading,logging,hmac
-from datetime import datetime,timezone
-from fastapi import FastAPI,Request,HTTPException
+"""Private FIG API: common verified importer for manual and daily checks."""
+from __future__ import annotations
+import hmac
+import os
+import threading
+from contextlib import asynccontextmanager
+from collections import defaultdict
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
-from ingest import PLATFORMS,submissions,filing
-import psycopg
-app=FastAPI(title="Logan FIG Intelligence")
-log=logging.getLogger("fig")
-state={"last_run":None,"last_error":None,"ingested":0}
-def connect():
-    url=os.getenv("DATABASE_URL")
-    if not url:raise RuntimeError("DATABASE_URL missing")
-    return psycopg.connect(url)
-def authorize(req):
-    # Fail closed until the Toolkit Entra gateway is integrated.
-    secret=os.getenv("FIG_API_TOKEN","")
-    supplied=req.headers.get("X-FIG-Token","")
-    if not secret or not hmac.compare_digest(secret,supplied):
-        raise HTTPException(403,"Toolkit authentication integration required")
-def setup(c):
-    c.execute("CREATE TABLE IF NOT EXISTS filings(cik TEXT,accession TEXT,period DATE,form TEXT,source TEXT,ingested_at TIMESTAMPTZ DEFAULT NOW(),PRIMARY KEY(cik,accession))")
-    c.execute("CREATE TABLE IF NOT EXISTS holdings(cik TEXT,accession TEXT,row_id INTEGER,issuer TEXT,cusip TEXT,title TEXT,value_usd BIGINT,shares DOUBLE PRECISION,PRIMARY KEY(cik,accession,row_id))")
-    c.execute("CREATE TABLE IF NOT EXISTS ingest_runs(id BIGSERIAL PRIMARY KEY,started_at TIMESTAMPTZ DEFAULT NOW(),finished_at TIMESTAMPTZ,status TEXT NOT NULL DEFAULT 'running',checked_filings INTEGER NOT NULL DEFAULT 0,new_filings INTEGER NOT NULL DEFAULT 0,error TEXT)")
-    c.execute("ALTER TABLE ingest_runs ADD COLUMN IF NOT EXISTS current_platform TEXT")
-def sync():
-    run_id=None
-    checked=0
-    imported=0
-    try:
-        with connect() as c:
-            if not c.execute("SELECT pg_try_advisory_lock(8726319)").fetchone()[0]:
-                return
-            setup(c)
-            run_id=c.execute("INSERT INTO ingest_runs(status) VALUES('running') RETURNING id").fetchone()[0]
-            c.commit()
-            for name,cik in PLATFORMS.items():
-                c.execute("UPDATE ingest_runs SET current_platform=%s WHERE id=%s",(name,run_id))
-                c.commit()
-                entries=submissions(cik)
-                for entry in entries:
-                    checked+=1
-                    acc=entry["accessionNumber"]
-                    if c.execute("SELECT 1 FROM filings WHERE cik=%s AND accession=%s",(cik,acc)).fetchone():
-                        continue
-                    try:
-                        rows,source=filing(cik,entry)
-                        with c.transaction():
-                            c.execute("INSERT INTO filings(cik,accession,period,form,source) VALUES(%s,%s,%s,%s,%s)",(cik,acc,entry["reportDate"],entry["form"],source))
-                            with c.cursor() as cur:
-                                cur.executemany("INSERT INTO holdings(cik,accession,row_id,issuer,cusip,title,value_usd,shares) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",[(cik,acc,i,*row) for i,row in enumerate(rows)])
-                        imported+=1
-                    except Exception:
-                        log.exception("Ingest failed for %s",acc)
-                        raise
-                    finally:
-                        c.execute("UPDATE ingest_runs SET checked_filings=%s,new_filings=%s WHERE id=%s",(checked,imported,run_id))
-                        c.commit()
-            c.execute("UPDATE ingest_runs SET finished_at=NOW(),status='success',checked_filings=%s,new_filings=%s WHERE id=%s",(checked,imported,run_id))
-            c.commit()
-    except Exception as exc:
-        log.exception("FIG SEC check failed")
-        if run_id is not None:
-            try:
-                with connect() as c:
-                    c.execute("UPDATE ingest_runs SET finished_at=NOW(),status='failed',checked_filings=%s,new_filings=%s,error=%s WHERE id=%s",(checked,imported,str(exc)[:500],run_id))
-                    c.commit()
-            except Exception:
-                log.exception("Could not record FIG failure")
-        raise
+from ingest import PLATFORMS, SECClient, submissions, filing, bulk_archives, parse_bulk, MAX_ZIP
+import storage
+from version import release
 
-@app.get("/api/status")
+def error_code(exc):
+    message=str(exc)
+    if message and len(message)<100 and all(c.isupper() or c.isdigit() or c=='_' for c in message):return message
+    return type(exc).__name__.upper()
+
+def execute(job, *, bulk=False):
+    errors=[]; checked=0; imported=0
+    try:
+        client=SECClient(progress=job.progress)
+        if bulk:
+            for url in bulk_archives(client):
+                job.progress(stage='downloading_zip',source_url=url)
+                archive,digest=client.download(url,limit=MAX_ZIP)
+                with archive:
+                    snapshots=parse_bulk(archive,url,digest,PLATFORMS.values(),os.getenv('HISTORY_START','2023-09-30'),job.progress)
+                for snap in snapshots:
+                    imported+=int(storage.save(job,snap));checked+=1
+                    job.progress(checked_filings=checked,new_filings=imported)
+        for name,cik in PLATFORMS.items():
+            job.progress(stage='discovering_filings',current_platform=name,current_accession='')
+            try: entries=submissions(cik,client)
+            except Exception as exc:
+                errors.append({'platform':name,'code':error_code(exc)});continue
+            if not entries:
+                errors.append({'platform':name,'code':'NO_13F_FILINGS_FOUND'});continue
+            job.progress(total_filings=len(entries))
+            for entry in entries:
+                acc=entry['accessionNumber']
+                job.progress(stage='checking_filing',current_accession=acc,bytes_downloaded=0)
+                try:
+                    if not storage.verified(job.c,cik,acc):
+                        snap=filing(cik,entry,client)
+                        job.progress(stage='validating_and_saving')
+                        imported+=int(storage.save(job,snap))
+                except Exception as exc:
+                    failure={'platform':name,'accession':acc,'code':error_code(exc)}
+                    errors.append(failure);storage.event(job.c,job.id,'FIG_FILING_FAILED',**failure)
+                finally:
+                    checked+=1;job.progress(checked_filings=checked,new_filings=imported)
+        result='success' if not errors else 'partial' if storage.counts(job.c)['imported_filings'] else 'failed'
+        job.finish(result,errors)
+        return result
+    except Exception as exc:
+        errors.append({'code':error_code(exc)})
+        try:job.finish('failed',errors)
+        except Exception:storage.emit('FIG_IMPORT_STATUS_WRITE_FAILED',run_id=job.id,code=error_code(exc))
+        return 'failed'
+    finally:job.close()
+
+def sync(*,bulk=False,trigger='scheduled'):
+    job=storage.begin(trigger)
+    if job is None:
+        storage.emit('FIG_IMPORT_ALREADY_RUNNING');return 'already_running'
+    return execute(job,bulk=bulk)
+
+@asynccontextmanager
+async def lifespan(app):
+    if os.getenv('DATABASE_URL'):
+        with storage.connect() as c: storage.setup(c);storage.record_release(c)
+        storage.emit('FIG_RELEASE_READY')
+        if os.getenv('FIG_SYNC_ON_STARTUP','').lower()=='true':
+            threading.Thread(target=sync,kwargs={'trigger':'startup'},daemon=True).start()
+    yield
+
+app=FastAPI(title='Logan FIG Intelligence',version=release()['version'],lifespan=lifespan)
+
+def authorize(req):
+    secret=os.getenv('FIG_API_TOKEN','');supplied=req.headers.get('X-FIG-Token','')
+    if not secret or not hmac.compare_digest(secret.encode(),supplied.encode()):raise HTTPException(403,'Toolkit authorization required')
+
+@app.get('/health')
+def health():return {'status':'ok',**release()}
+@app.get('/',response_class=HTMLResponse)
+def home():return '<h1>Logan FIG Intelligence</h1><p>Private service. Open FIG Intelligence through the authenticated Logan Toolkit.</p>'
+
+@app.get('/api/status')
 def status(req:Request):
     authorize(req)
-    with connect() as c:
-        setup(c)
-        last=c.execute("SELECT started_at,finished_at,status,checked_filings,new_filings,error,current_platform FROM ingest_runs ORDER BY id DESC LIMIT 1").fetchone()
-        last_success=c.execute("SELECT finished_at FROM ingest_runs WHERE status='success' ORDER BY id DESC LIMIT 1").fetchone()
-        counts=c.execute("SELECT count(*),max(period),max(ingested_at) FROM filings").fetchone()
-    def iso(value):return value.isoformat() if value else None
-    return {"last_check_started":iso(last[0]) if last else None,"last_check_completed":iso(last[1]) if last else None,
-            "last_check_status":last[2] if last else "never","checked_filings":last[3] if last else 0,
-            "new_filings":last[4] if last else 0,"last_error":last[5] if last else None,"current_platform":last[6] if last else None,
-            "last_successful_check":iso(last_success[0]) if last_success else None,
-            "imported_filings":counts[0],"latest_reporting_period":iso(counts[1]),"latest_import":iso(counts[2])}
+    with storage.connect() as c: return storage.status(c)
 
-@app.get("/health")
-def health():return {"status":"ok"}
-@app.get("/",response_class=HTMLResponse)
-def home():return "<h1>Logan FIG Intelligence</h1><p>Private service. Toolkit Entra SSO integration pending; no public reports enabled.</p>"
-@app.get("/api/platforms")
+@app.get('/api/version')
+def version(req:Request):
+    authorize(req)
+    from pathlib import Path
+    import json
+    return {**release(),'changes':json.loads(Path(__file__).with_name('CHANGELOG.json').read_text())}
+
+@app.get('/api/platforms')
 def platforms(req:Request):
     authorize(req)
-    with connect() as c:
-        setup(c); rows=c.execute("SELECT cik,count(*),min(period)::text,max(period)::text FROM filings GROUP BY cik").fetchall()
-    return [{"name":name,"cik":cik,"filing_count":next((r[1] for r in rows if r[0]==cik),0),"first_period":next((r[2] for r in rows if r[0]==cik),None),"last_period":next((r[3] for r in rows if r[0]==cik),None)} for name,cik in PLATFORMS.items()]
-@app.get("/api/filings/{cik}")
+    with storage.connect() as c:snapshots=storage.latest(c)
+    return [{'name':name,'cik':cik,'filing_count':sum(s.cik==cik for s in snapshots),
+             'first_period':min((s.period for s in snapshots if s.cik==cik),default=None),
+             'last_period':max((s.period for s in snapshots if s.cik==cik),default=None)} for name,cik in PLATFORMS.items()]
+
+@app.get('/api/filings/{cik}')
 def reports(cik:str,req:Request):
     authorize(req)
-    with connect() as c:
-        return [{"period":str(r[0]),"accession":r[1],"positions":r[2],"reported_value_usd":r[3]} for r in c.execute("SELECT f.period,f.accession,count(h.row_id),coalesce(sum(h.value_usd),0) FROM filings f LEFT JOIN holdings h USING(cik,accession) WHERE f.cik=%s GROUP BY f.period,f.accession ORDER BY f.period DESC",(cik,)).fetchall()]
-@app.get("/api/analysis/{cik}")
+    if cik not in PLATFORMS.values():raise HTTPException(404,'Unknown filer')
+    with storage.connect() as c:snaps=storage.latest(c,cik)
+    return [{'period':s.period,'accession':s.accession,'positions':len(s.rows),'reported_value_usd':s.expected_total,
+             'form':s.form,'filing_date':s.filing_date,'amendment_type':s.amendment_type,'report_type':s.report_type,
+             'reconciled':True,'snapshot_sha256':s.checksum,'sources':s.sources} for s in sorted(snaps,key=lambda s:(s.period,s.filing_date,s.accession),reverse=True)]
+
+def effective_periods(snaps):
+    """Restatements replace a period; new-holdings amendments ADD to a base.
+    Keep the raw filing rows intact; same-CUSIP rows can represent shared managers.
+    """
+    groups=defaultdict(list);result={};issues=[]
+    for snap in snaps:groups[snap.period].append(snap)
+    for period,versions in groups.items():
+        rows=None;sources=[]
+        for s in sorted(versions,key=lambda s:(s.filing_date,s.amendment_no,s.accession)):
+            if s.form=='13F-HR' or s.amendment_type=='RESTATEMENT':rows=list(s.rows);sources=[s.accession]
+            elif s.amendment_type=='NEW HOLDINGS' and rows is not None:rows.extend(s.rows);sources.append(s.accession)
+            else:issues.append({'period':period,'accession':s.accession,'code':'AMENDMENT_BASE_MISSING'})
+        if rows is not None:result[period]={'rows':rows,'accessions':sources}
+    return result,issues
+
+@app.get('/api/analysis/{cik}')
 def analysis(cik:str,req:Request):
     authorize(req)
-    if cik not in PLATFORMS.values():raise HTTPException(404,"Unknown filer")
+    if cik not in PLATFORMS.values():raise HTTPException(404,'Unknown filer')
     from analysis import analyze
-    with connect() as c:
-        # One filing per quarter; prefer amended filings and most recently ingested.
-        rows=c.execute("""
-            WITH ranked AS (
-              SELECT cik,accession,period,ROW_NUMBER() OVER
-              (PARTITION BY cik,period ORDER BY (form='13F-HR/A') DESC,ingested_at DESC,accession DESC) rn
-              FROM filings WHERE cik=%s
-            )
-            SELECT f.period,h.issuer,h.cusip,h.title,h.value_usd
-            FROM ranked f JOIN holdings h USING(cik,accession)
-            WHERE f.rn=1 ORDER BY f.period,h.row_id
-        """,(cik,)).fetchall()
+    with storage.connect() as c:snaps=storage.latest(c,cik)
+    effective,issues=effective_periods(snaps)
+    rows=[(p,r['issuer'],r['cusip'],r['title'],r['value_usd'],r['put_call'],r['share_type'])
+          for p,details in effective.items() for r in details['rows']]
     result=analyze(rows)
-    result["cik"]=cik
-    result["reporting_entity"]=next((name for name,value in PLATFORMS.items() if value==cik),cik)
+    result.update({'cik':cik,'reporting_entity':next(name for name,v in PLATFORMS.items() if v==cik),
+        'amendment_issues':issues,'period_sources':{p:d['accessions'] for p,d in effective.items()},
+        'reported_other_managers':[{'period':s.period,'accession':s.accession,'managers':s.managers} for s in snaps],
+        **release()})
     return result
 
-@app.post("/api/sync")
+@app.post('/api/sync')
 def manual(req:Request):
     authorize(req)
-    with connect() as c:
-        setup(c)
-        active=c.execute("SELECT started_at FROM ingest_runs WHERE status='running' AND started_at>NOW()-INTERVAL '3 hours' ORDER BY id DESC LIMIT 1").fetchone()
-        if active:
-            return {"queued":False,"reason":"An import is already running"}
-    threading.Thread(target=sync,daemon=True).start()
-    return {"queued":True}
+    try:
+        SECClient()  # Reject configuration errors before acknowledging a queued job.
+        job=storage.begin('manual')
+    except Exception as exc:raise HTTPException(503,error_code(exc)) from exc
+    if job is None:return {'queued':False,'reason':'An import is already running'}
+    try:
+        threading.Thread(target=execute,args=(job,),daemon=True).start()
+    except Exception as exc:
+        try: job.finish('failed',[{'code':'WORKER_START_FAILED'}])
+        finally: job.close()
+        raise HTTPException(503,'WORKER_START_FAILED') from exc
+    return {'queued':True,'run_id':job.id,'status':'running'}

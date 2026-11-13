@@ -1,0 +1,49 @@
+name: FIG importer release checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fig_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d fig_test"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fig_test
+      SEC_USER_AGENT: Logan Capital Management FIG Research sslee@logancapital.com
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt pip-audit
+      - run: pip-audit -r requirements.txt --progress-spinner off
+      - run: python -m compileall -q app.py storage.py ingest.py analysis.py worker.py version.py
+      - run: python -m pytest tests -q --junitxml=/tmp/fig-tests.xml
+      - name: Live SEC XML and ZIP reconciliation with isolated PostgreSQL readback
+        run: python verify_live_sources.py
+      - name: Record resolved dependency versions
+        run: python -m pip freeze > /tmp/fig-dependencies.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fig-importer-release-validation
+          path: |
+            /tmp/fig-tests.xml
+            /tmp/fig-live-verification.json
+            /tmp/fig-dependencies.txt
+          retention-days: 30
