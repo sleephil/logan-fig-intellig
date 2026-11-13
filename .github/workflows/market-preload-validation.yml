@@ -34,12 +34,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Reconstruct and hash-check exact candidate
+      - name: Reconstruct and hash-check exact final candidate
         run: |
           cp -R .release-build /tmp/fig-market-build
           test "$(git rev-parse origin/main)" = 29666d73d44cfa58f1df7bbb6f5e402e63db7c3b
           git switch --detach 29666d73d44cfa58f1df7bbb6f5e402e63db7c3b
-          git switch -c release/market-preload-reverse-20261113
+          git switch -c release/market-preload-reverse-final-20261113
           python - <<'PY'
           from pathlib import Path
           import base64,lzma,json,hashlib,subprocess,ast
@@ -59,6 +59,7 @@ jobs:
           subprocess.run(['git','diff','--check'],check=True)
           Path('/tmp/market-manifest.json').write_text(json.dumps(expected,indent=2))
           PY
+          python /tmp/fig-market-build/refinement.py
       - run: python -m pip install -r requirements.txt pip-audit==2.9.0
       - name: Blocking audits and complete importer/database regressions
         run: |
@@ -87,8 +88,8 @@ jobs:
           git diff --cached --check
           git config user.name 'Logan Release Validation'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'FIG 0.5.0: compact market preload and indexed reverse-manager reports'
-          git push origin HEAD:refs/heads/release/market-preload-reverse-20261113
+          git commit -m 'FIG 0.5.0: verified market preload and indexed reverse-manager reports'
+          git push origin HEAD:refs/heads/release/market-preload-reverse-final-20261113
           git rev-parse HEAD > /tmp/market-release.txt
           git archive --format=tar.gz HEAD > /tmp/market-validated-source.tar.gz
       - name: Retain inspectable validation evidence
