@@ -1,0 +1,24 @@
+name: FIG picker source snapshot
+on:
+  push:
+    branches: [work/fig-firm-picker-20261113]
+    paths: [.github/workflows/fig-picker-source.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: |
+          mkdir -p /tmp/fig-picker-source
+          git archive --format=tar.gz c4f95ec1b24b97d7e279d9de9ed690b9ea26a791 > /tmp/fig-picker-source/backend.tar.gz
+          git rev-parse c4f95ec1b24b97d7e279d9de9ed690b9ea26a791 > /tmp/fig-picker-source/base.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fig-picker-source
+          path: /tmp/fig-picker-source/
+          retention-days: 7
