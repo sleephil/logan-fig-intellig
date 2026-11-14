@@ -134,5 +134,5 @@ def test_version_and_private_apis_stay_protected(monkeypatch):
         assert c.get(url).status_code==403
     assert c.post('/api/sync').status_code==403
     result=c.get('/api/version',headers={'X-FIG-Token':'synthetic-token'}).json()
-    assert result['version']=='0.5.0' and result['changes'][0]['version']==result['version']
+    assert result['version']=='0.5.1' and result['changes'][0]['version']==result['version']
     assert '/fig-intelligence' in result['changes'][0]['changed_pages']

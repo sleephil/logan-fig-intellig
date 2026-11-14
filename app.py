@@ -98,6 +98,9 @@ async def lifespan(app):
     if os.getenv('DATABASE_URL'):
         with storage.connect() as c: storage.setup(c);storage.record_release(c)
         storage.emit('FIG_RELEASE_READY')
+        if os.getenv('RAILWAY_SERVICE_ID'):
+            from filer_capabilities import emit_coverage
+            threading.Thread(target=emit_coverage,daemon=True).start()
         if os.getenv('FIG_SYNC_ON_STARTUP','').lower()=='true':
             threading.Thread(target=sync,kwargs={'trigger':'startup'},daemon=True).start()
     stop=threading.Event()
@@ -137,12 +140,8 @@ def version(req:Request):
 def platforms(req:Request):
     authorize(req)
     with storage.connect() as c:
-        import market_store
-        rows=directory.listing(c);loaded=market_store.directory_rows(c)
-        for row in rows:
-            if row['cik'] in loaded:
-                row.update(loaded[row['cik']],manager_summary_ready=True)
-        return rows
+        from filer_capabilities import platforms as firm_options
+        return firm_options(c)
 
 
 def require_filer(code):

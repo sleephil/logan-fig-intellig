@@ -1,3 +1,9 @@
+## FIG 0.5.1 - 2026-11-13 - Coverage-aware reporting-firm discovery
+- Add read-only manager-reporting availability to the complete SEC filer directory, based on the latest loaded reconciled quarter, with historical detail and incomplete-attribution states kept separate.
+- Prefer a newer detailed-filing refresh over an older market summary when classifying coverage. No names are inferred to be external mandates.
+- Preserve all-filer preload, SEC source validation, queues, schedules, raw filings, financial values and private authorization; browsing filters do not alter acquisition.
+- Record a non-secret startup coverage receipt for deployment verification. No database migration or source writes are introduced.
+
 ## FIG 0.5.0 - 2026-11-13 - Market preload and reverse manager reporting
 - Preload all filers in the existing September 2023-onward holdings window from official bulk ZIPs, then checkpoint individual newer filings. Keep the 1994-onward identity directory separate.
 - Store compact reconciled accession-level manager buckets, not duplicate security histories; publish indexed firm-manager-quarter generations outside report requests.
