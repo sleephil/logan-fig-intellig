@@ -6,7 +6,7 @@ import threading
 from contextlib import asynccontextmanager
 from collections import defaultdict
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from ingest import PLATFORMS, SECClient, submissions, filing, bulk_archives, parse_bulk, MAX_ZIP
 import storage
 import filer_directory as directory
@@ -272,3 +272,17 @@ def market_reverse(req:Request,manager_id:str):
     if len(manager_id)>160:raise HTTPException(400,'Invalid manager identity')
     import market_store
     with storage.connect() as c:return market_store.reverse(c,manager_id)
+
+
+@app.get('/api/market/reverse/pdf')
+def market_reverse_pdf(req:Request,manager_id:str):
+    authorize(req)
+    if not manager_id or len(manager_id)>160:raise HTTPException(400,'Invalid manager identity')
+    import market_store
+    from fig_pdf import build
+    with storage.connect() as c:report=market_store.reverse(c,manager_id)
+    if not report.get('manager'):raise HTTPException(404,'Manager not found')
+    pdf=build(report)
+    return Response(content=pdf,media_type='application/pdf',headers={
+        'Content-Disposition':'attachment; filename="logan-fig-manager-report.pdf"',
+        'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
