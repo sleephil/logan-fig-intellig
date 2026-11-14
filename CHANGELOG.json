@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.5.1",
+    "date": "2026-11-13",
+    "title": "Coverage-aware reporting-firm discovery",
+    "changed_pages": [
+      "/fig-intelligence",
+      "/api/platforms"
+    ],
+    "changes": [
+      "Add read-only manager-reporting availability to the complete SEC filer directory, based on the latest loaded reconciled quarter, with historical detail and incomplete-attribution states kept separate.",
+      "Prefer a newer detailed-filing refresh over an older market summary when classifying coverage. No names are inferred to be external mandates.",
+      "Preserve all-filer preload, SEC source validation, queues, schedules, raw filings, financial values and private authorization; browsing filters do not alter acquisition.",
+      "Record a non-secret startup coverage receipt for deployment verification. No database migration or source writes are introduced."
+    ]
+  },
+  {
     "version": "0.5.0",
     "date": "2026-11-13",
     "title": "Market-wide manager preload and reverse lookup",

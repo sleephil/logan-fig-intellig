@@ -108,3 +108,15 @@ same comparable reporting firms. Exact names without stable IDs carry an explici
 identity limitation; fuzzy matches are never auto-merged.
 
 Market-wide bulk rejections are queued for independent original-XML validation; only reconciled originals replace a rejected aggregate. Genuine zero-entry/zero-value reports are accepted as such, never synthesized for a missing filing.
+
+
+## Firm picker coverage (0.5.1)
+The all-filer import and history window are unchanged. `/api/platforms` now
+returns compact disclosure evidence, not an outside-manager or client census.
+`manager_reporting` requires listed managers and positive unique linked assets
+in the latest *loaded* quarter; a roster without linked amounts is
+`manager_list_only`, no roster is `holdings_only`, and an unloaded filer is
+`not_loaded`. Historical manager detail, reporting date and comparison quality
+are independent fields. Affiliates can appear in included-manager disclosure.
+A newly loaded raw filing supersedes stale published metadata. These are read-only
+classifications; broad acquisition never depends on the user's dropdown filter.

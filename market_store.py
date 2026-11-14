@@ -185,8 +185,18 @@ def forward(c,code):
 def directory_rows(c):
     gen=active(c)
     if gen is None:return {}
-    return {r[0]:dict(filing_count=r[1],first_period=str(r[2]),last_period=str(r[3])) for r in c.execute(
-        'SELECT cik,filing_count,first_period,last_period FROM fig_market_reports WHERE generation=%s',(gen,)).fetchall()}
+    from filer_capabilities import summarize
+    # Return compact metadata only. A newer raw refresh takes precedence, exactly
+    # as in forward(); the directory must not advertise a stale cached report.
+    rows=c.execute("""SELECT r.cik,r.filing_count,r.first_period,r.last_period,
+        r.payload->'period_summaries' FROM fig_market_reports r
+        JOIN fig_market_generations g ON g.id=r.generation
+        WHERE r.generation=%s AND NOT EXISTS
+        (SELECT 1 FROM fig_filings_v2 f WHERE f.cik=r.cik
+         AND f.parser_version=%s AND f.recorded_at>g.created_at)""",
+        (gen,storage.PARSER_VERSION)).fetchall()
+    return {r[0]:dict(filing_count=r[1],first_period=str(r[2]),last_period=str(r[3]),
+                     **summarize(r[4])) for r in rows}
 
 
 def manager_options(c,search='',limit=250):
