@@ -1,0 +1,96 @@
+name: FIG firm picker backend validation
+on:
+  push:
+    branches: [work/fig-firm-picker-20261113]
+    paths: [.github/workflows/fig-picker-validation.yml, '.release-build/**']
+permissions:
+  contents: write
+concurrency:
+  group: fig-firm-picker-backend
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fig_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d fig_test"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      PYTHONPATH: .
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fig_test
+      SEC_USER_AGENT: Logan Capital Management FIG Research sslee@logancapital.com
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Reconstruct exact eleven-file candidate
+        run: |
+          cp -R .release-build /tmp/fig-picker-build
+          test "$(git rev-parse origin/main)" = c4f95ec1b24b97d7e279d9de9ed690b9ea26a791
+          git switch --detach c4f95ec1b24b97d7e279d9de9ed690b9ea26a791
+          git switch -c release/fig-firm-picker-20261113
+          python - <<'PY'
+          from pathlib import Path
+          import base64,lzma,json,hashlib,subprocess,ast
+          raw=lzma.decompress(base64.b64decode(Path('/tmp/fig-picker-build/picker.xz64').read_text().strip(),validate=True))
+          assert hashlib.sha256(raw).hexdigest()=='2491e01c71df705fe1510e5d61381005f086f92fb536f2ad8d27106a89c55bcb'
+          data=json.loads(raw);expected=data['hashes']
+          allowed={'CHANGELOG.json','CHANGELOG.md','app.py','docs/importer.md','filer_capabilities.py','market_store.py','tests/test_filer_capabilities.py','tests/test_ingest.py','tests/test_managers.py','verify_picker_sources.py','version.py'}
+          assert set(expected)==allowed
+          patch=data['patch'].encode();subprocess.run(['git','apply','--check','-'],input=patch,check=True);subprocess.run(['git','apply','-'],input=patch,check=True)
+          for p,h in expected.items():
+              assert hashlib.sha256(Path(p).read_bytes()).hexdigest()==h,p
+              if p.endswith('.py'):ast.parse(Path(p).read_text())
+          Path('/tmp/fig-picker-manifest.json').write_text(json.dumps(expected,indent=2))
+          PY
+          git diff --check
+      - run: python -m pip install -r requirements.txt pip-audit==2.9.0
+      - name: Security and all backend regressions
+        run: |
+          pip-audit -r requirements.txt --progress-spinner off
+          python -m compileall -q .
+          python -m pytest tests -q --disable-warnings --junitxml=/tmp/fig-picker-tests.xml
+      - name: Real SEC archive and independent PostgreSQL/API picker readback
+        run: python verify_picker_sources.py
+      - name: Publish validated clean release branch
+        run: |
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = c4f95ec1b24b97d7e279d9de9ed690b9ea26a791
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json,subprocess
+          expected=json.loads(Path('/tmp/fig-picker-manifest.json').read_text())
+          assert all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==h for p,h in expected.items())
+          subprocess.run(['git','add','--',*expected],check=True)
+          assert set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())==set(expected)
+          PY
+          git diff --cached --check
+          git config user.name 'Logan Release Validation'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'FIG 0.5.1: distinguish manager-reporting firms without narrowing market ingestion'
+          git push origin HEAD:refs/heads/release/fig-firm-picker-20261113
+          git rev-parse HEAD > /tmp/fig-picker-release.txt
+          git archive --format=tar.gz HEAD > /tmp/fig-picker-backend.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fig-picker-backend-validation
+          retention-days: 30
+          path: |
+            /tmp/fig-picker-tests.xml
+            /tmp/fig-picker-manifest.json
+            /tmp/fig-picker-real-sources.json
+            /tmp/fig-market-source-evidence.json
+            /tmp/fig-picker-release.txt
+            /tmp/fig-picker-backend.tar.gz
