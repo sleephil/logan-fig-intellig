@@ -80,6 +80,8 @@ def build(report):
         canvas.setStrokeColor(TEAL);canvas.line(38,h-34,w-38,h-34)
         canvas.setFont("Helvetica",7);canvas.setFillColor(GRAY)
         canvas.drawString(38,25,"LOGAN CAPITAL  |  INTERNAL RESEARCH  |  FIG Intelligence")
+        canvas.setFont("Helvetica",6)
+        canvas.drawCentredString(w/2,25,"\u00a9 2026 Stephen S. Lee. All rights reserved.")
         canvas.drawRightString(w-38,25,"Page "+str(doc.page));canvas.restoreState()
     doc.build(story,onFirstPage=page,onLaterPages=page)
     return buf.getvalue()
