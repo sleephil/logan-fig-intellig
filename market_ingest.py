@@ -58,6 +58,10 @@ def bulk_summaries(stream, url, digest, start, progress=None):
         members = {}; expanded = 0
         if len(z.infolist()) > 64: raise ValueError('ZIP_TOO_MANY_MEMBERS')
         for item in z.infolist():
+            # Official SEC archives may contain harmless directory records.
+            # Ignore only a plain top-level directory; never extract entries.
+            if item.is_dir() and re.fullmatch(r'[A-Za-z0-9_. -]+/', item.filename):
+                continue
             p = PurePosixPath(item.filename); expanded += item.file_size
             if (len(p.parts) != 1 or p.is_absolute() or '..' in p.parts or '\\' in item.filename
                 or stat.S_ISLNK(item.external_attr >> 16) or item.flag_bits & 1): raise ValueError('UNSAFE_ZIP_MEMBER')
